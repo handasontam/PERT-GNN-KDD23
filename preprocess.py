@@ -1,20 +1,11 @@
 import pandas as pd
-import networkx as nx
 import numpy as np
 import os
-import os.path as osp
-from sklearn.manifold import TSNE
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 from joblib import dump, load
 import torch
-from torch_geometric.data import InMemoryDataset, download_url
 import torch
-import json
-import sys
-import math
-from misc import get_corpus_data, GraphConstruct, find_most_recent_fts
-from collections import defaultdict
+from misc import GraphConstruct, find_most_recent_fts
 
 # Output
 # 1. tr2data_map (for training)
@@ -39,6 +30,7 @@ def get_file(filename):
 
 
 def get_tr2ts_map(df):
+    """For each trace, get the timestamp of the first request, which represents the start time of the trace"""
     print("Getting tr2ts_map.joblib...")
     tr2ts_map = get_file("processed/tr2ts_map.joblib")
     if tr2ts_map is not None:
@@ -83,12 +75,6 @@ def combine_tr2data_with_delay(tr2data_map, tr2delay_map, tr2tsrange_map):
         tr2data_map[trace_id]["tsrange"] = tsrange
 
     return tr2data_map
-
-
-def graph_dtw():
-    return
-
-
 
 
 def map_consecutive_ids(df, cols):
@@ -224,7 +210,6 @@ def get_df():
             ),
             ignore_index=True,
         ).drop_duplicates()
-        # .drop(columns=["Unnamed: 0"])
         df = df.sort_values(by=["timestamp"])
         print(f"{df.shape}")
 
@@ -235,7 +220,6 @@ def get_df():
         df, _ = map_consecutive_ids(df, ["rpcid"])
         df, _ = map_consecutive_ids(df, ["rpctype"])
 
-        df.to_csv("processed/processed_df.csv", index=False)
         ##############################################
         ##### Get resource df ########################
         ##############################################
@@ -256,7 +240,6 @@ def get_df():
         resource_df.columns = ["_".join(c) for c in resource_df.columns]
 
         resource_df = resource_df.reset_index()
-        resource_df.to_csv("processed/processed_resource_df.csv", index=False)
 
         ##############################################
         df = filter_traces_with_missing_features(df, resource_df)
@@ -272,6 +255,8 @@ def get_df():
 
         # resource_df["msname"] = resource_df["msname"].map(ms2int).astype(int)
         # ms_with_resources = set(resource_df.msname.astype(int).unique())
+
+        ############ Save processed ###############
         df.to_csv("processed/processed_df.csv", index=False)
         resource_df.to_csv("processed/processed_resource_df.csv", index=False)
 
@@ -283,11 +268,9 @@ def get_df():
 
 def main():
     print("Loading Data")
-    # groupby_entry = get_file("groupby_entry.joblib")
     df, resource_df = get_df()
     resource_df = resource_df.set_index(["timestamp", "msname"])
     ms_with_resources = resource_df.index.get_level_values("msname").unique()
-    # resource_df = resource_df.set_index("timestamp")
     tr2ts_map = get_tr2ts_map(df)
     tr2data_map = dict()
     entry2runtimes_map = dict()
@@ -303,12 +286,17 @@ def main():
     )
     corpus_df = df.groupby("traceid").apply(
         lambda x: " ".join(x["um_dm_interface"].values)
-    )
-    tr2delay = df.groupby(["traceid"])["rt"].apply(lambda x: x.abs().max()).to_dict()
+    )  # corpus_df represent each trace as a string (a sequence of um_dm_interface)
+    tr2delay = (
+        df.groupby(["traceid"])["rt"].apply(lambda x: x.abs().max()).to_dict()
+    )  # asumming that the delay is the max of the absolute value of rt
     traceid2runtime_id, _ = map_consecutive_ids(corpus_df, None)
 
-    for entry, entry_group in tqdm(df.groupby(["entryid"])):
-        for traceid, trace_df in entry_group.groupby(["traceid"]):
+    for entry, entry_group in tqdm(df.groupby("entryid")):
+        # traceid  timestamp  rpcid    um     rpctype  dm   interface  rt  entryid  endTimestamp um_dm_interface
+        # 81538    187834     2        1809   0        2035 29         -2  9        187836       1809_2035_29
+        # 81538    187835     4        2035   2        1809 33         1   9        187836       2035_1809_33
+        for traceid, trace_df in entry_group.groupby("traceid"):
             runtime_id = traceid2runtime_id[traceid]
             trace_timestamp = tr2ts_map[traceid]
             trace_resource_df = find_most_recent_fts(resource_df, trace_timestamp)
@@ -333,10 +321,9 @@ def main():
                     span_edge_index,
                     span_X,
                     span_node_depth,
-                    span_edge_attr, 
-                    span_edge_orderings, 
-                    span_edge_durations, 
-                    sorted_unique_ms
+                    span_edge_attr,
+                    span_edge_durations,
+                    sorted_unique_ms,
                 ) = g.get_span_edge_index()
 
                 ms_id = torch.tensor(
@@ -350,7 +337,6 @@ def main():
                     "num_nodes": num_nodes,
                     "node_depth": span_node_depth,
                     "edge_attr": span_edge_attr,
-                    "edge_orderings": span_edge_orderings
                 }
             else:
                 runtime2spangraph_map[runtime_id]["occurences"] += 1
@@ -362,7 +348,7 @@ def main():
                     pert_edge_attr,
                     pert_X,
                     pert_node_depth,
-                    sorted_unique_ms
+                    sorted_unique_ms,
                 ) = g.get_pert_edge_index()
 
                 ms_id = torch.tensor(
@@ -401,4 +387,3 @@ if __name__ == "__main__":
     # edge_index = torch.tensor(
     #     weighted_edge_list_df.loc[:, ["um", "dm"]].values.T, dtype=torch.long
     # ).contiguous()
-

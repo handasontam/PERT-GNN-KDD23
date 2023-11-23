@@ -5,6 +5,8 @@ from torch_geometric.nn import (
 )
 import torch.nn.functional as F
 from torch_geometric.nn import Linear
+
+
 class SAGEDeterministic(torch.nn.Module):
     def __init__(
         self,
@@ -77,7 +79,6 @@ class SAGEDeterministic(torch.nn.Module):
         cat_X,
         edge_index,
         edge_attr,
-        edge_orderings,
         pattern_num_nodes,
         pattern_probs,
         entry_id,
@@ -93,7 +94,7 @@ class SAGEDeterministic(torch.nn.Module):
                 self.rpctype_embeds(edge_attr[:, 1]),
             ],
             dim=1,
-        ) + self.edge_linear(edge_orderings)
+        )
 
         for i, conv in enumerate(self.convs[:-1]):
             x = conv(x, edge_index=edge_index, edge_attr=edge_embeds)
@@ -111,4 +112,3 @@ class SAGEDeterministic(torch.nn.Module):
         )
         # ensure that it is non-negative
         return global_predict, local_predict
-

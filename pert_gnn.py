@@ -31,30 +31,6 @@ device = f"cuda:{args.device}" if torch.cuda.is_available() else "cpu"
 device = torch.device(device)
 
 
-tr2data = torch.load("processed/tr2data.pt")
-# sample 100000 traces
-tr2data = {tr: tr2data[tr] for tr in list(tr2data.keys())[:100000]}
-if args.graph_type == "span":
-    runtime2graph = torch.load("processed/runtime2spangraph_map.pt")
-elif args.graph_type == "pert":
-    runtime2graph = torch.load("processed/runtime2pertgraph_map.pt")
-entry2runtimes = load("processed/entry2runtimes.joblib")
-resource_df = pd.read_csv("processed/processed_resource_df.csv", engine="pyarrow")
-resource_df["msname"] = resource_df["msname"].astype(int)
-resource_df = resource_df.set_index(["timestamp", "msname"])
-
-unique_ms_ids = np.unique(
-    np.array(
-        [
-            ms_id.item()
-            for runtime_id in runtime2graph.keys()
-            for ms_id in runtime2graph[runtime_id]["ms_id"]
-        ]
-    ).ravel()
-)
-print("==>> num unique_ms_ids: ", len(unique_ms_ids))
-
-
 @lru_cache(maxsize=None)
 def get_x(timestamp, sorted_unique_ms, ms_with_resources):
     num_features = resource_df.shape[1]
@@ -91,25 +67,14 @@ def get_all_runtimes_id_probs(entry_id, entry2runtimes):
         list(entry2runtimes[entry_id].values()),
     )
 
+
 @lru_cache(maxsize=None)
 def get_edge_attr(rt_ids):
     return torch.cat(
-        [
-            runtime2graph[rt_id]["edge_attr"]
-            for rt_id in rt_ids
-        ],
+        [runtime2graph[rt_id]["edge_attr"] for rt_id in rt_ids],
         dim=0,
     )
 
-@lru_cache(maxsize=None)
-def get_edge_orderings(rt_ids):
-    return torch.cat(
-        [
-            runtime2graph[rt_id]["edge_orderings"]
-            for rt_id in rt_ids
-        ],
-        dim=0,
-    )
 
 @lru_cache(maxsize=None)
 def get_pattern_num_nodes(rt_ids):
@@ -122,18 +87,22 @@ def get_pattern_num_nodes(rt_ids):
         dtype=torch.float,
     )
 
+
 @lru_cache(maxsize=None)
 def get_cat_X(rt_ids):
     return torch.cat([runtime2graph[rt_id]["ms_id"] for rt_id in rt_ids], dim=0)
+
 
 @lru_cache(maxsize=None)
 def get_node_depth(rt_ids):
     return torch.cat([runtime2graph[rt_id]["node_depth"] for rt_id in rt_ids], dim=0)
 
+
 @lru_cache(maxsize=None)
 def get_edge_index(rt_ids):
     cum_num_nodes = np.append(
-        0, np.cumsum([runtime2graph[rt_id]["num_nodes"] for rt_id in rt_ids])[:-1],
+        0,
+        np.cumsum([runtime2graph[rt_id]["num_nodes"] for rt_id in rt_ids])[:-1],
     )
     return torch.cat(
         [
@@ -143,6 +112,7 @@ def get_edge_index(rt_ids):
         dim=1,
     )
 
+
 @lru_cache(maxsize=None)
 def transform_pattern_probs(rt_probs, rt_ids):
     return torch.tensor(
@@ -150,10 +120,15 @@ def transform_pattern_probs(rt_probs, rt_ids):
             [rt_prob]
             for (rt_id, rt_prob) in zip(rt_ids, rt_probs)
             for _ in range(runtime2graph[rt_id]["num_nodes"])
-        ]
-        , dtype=torch.float)
+        ],
+        dtype=torch.float,
+    )
+
 
 def get_entry_data(entry_id, timestamp, entry2runtimes, runtime2graph, y):
+    """
+    Return a torch_geometric.data.Data object for a given entry_id
+    """
     ms_with_resources = np.unique(resource_df.index.get_level_values("msname").values)
     rt_ids, rt_probs = get_all_runtimes_id_probs(entry_id, entry2runtimes)
     rt_probs = np.array(rt_probs)[np.newaxis].T
@@ -175,11 +150,8 @@ def get_entry_data(entry_id, timestamp, entry2runtimes, runtime2graph, y):
     rt_ids = tuple(rt_ids)
     cat_X = get_cat_X(rt_ids)
     node_depth = get_node_depth(rt_ids)
-
     edge_index = get_edge_index(rt_ids)
-
     edge_attr = get_edge_attr(rt_ids)
-
     pattern_num_nodes = get_pattern_num_nodes(rt_ids)
 
     return Data(
@@ -223,7 +195,9 @@ def get_data_loader(data_list):
     train_data_loader = DataLoader(
         train_data_list, batch_size=args.batch_size, shuffle=True
     )
-    valid_data_loader = DataLoader(valid_data_list, batch_size=args.batch_size, shuffle=False)
+    valid_data_loader = DataLoader(
+        valid_data_list, batch_size=args.batch_size, shuffle=False
+    )
     test_data_loader = DataLoader(
         test_data_list, batch_size=args.batch_size, shuffle=False
     )
@@ -236,9 +210,18 @@ def train(train_loader):
     total_loss = 0
     mape = 0
     # Create train loader
-    for data in (pbar := tqdm(train_loader)) :
-        rt_ids_rt_probs = [get_all_runtimes_id_probs(entry_id.item(), entry2runtimes) for entry_id in data.entry_id]
-        rt_probs = torch.cat([transform_pattern_probs(tuple(rt_probs), tuple(rt_ids)).to(device) for (rt_ids, rt_probs) in rt_ids_rt_probs], dim=0)
+    for data in (pbar := tqdm(train_loader)):
+        rt_ids_rt_probs = [
+            get_all_runtimes_id_probs(entry_id.item(), entry2runtimes)
+            for entry_id in data.entry_id
+        ]
+        rt_probs = torch.cat(
+            [
+                transform_pattern_probs(tuple(rt_probs), tuple(rt_ids)).to(device)
+                for (rt_ids, rt_probs) in rt_ids_rt_probs
+            ],
+            dim=0,
+        )
         data = data.to(device)
         optimizer.zero_grad()
         global_pred, local_pred = model(
@@ -246,7 +229,6 @@ def train(train_loader):
             data.cat_X,
             data.edge_index,
             data.edge_attr,
-            data.edge_orderings,
             data.pattern_num_nodes,
             # data.pattern_probs,
             rt_probs,
@@ -266,21 +248,27 @@ def train(train_loader):
 @torch.no_grad()
 def test(loader):
     model.eval()
-
-    # mse = 0
     mae = 0
     mape = 0
     q95loss = 0
     for data in loader:
-        rt_ids_rt_probs = [get_all_runtimes_id_probs(entry_id.item(), entry2runtimes) for entry_id in data.entry_id]
-        rt_probs = torch.cat([transform_pattern_probs(tuple(rt_probs), tuple(rt_ids)).to(device) for (rt_ids, rt_probs) in rt_ids_rt_probs], dim=0)
+        rt_ids_rt_probs = [
+            get_all_runtimes_id_probs(entry_id.item(), entry2runtimes)
+            for entry_id in data.entry_id
+        ]
+        rt_probs = torch.cat(
+            [
+                transform_pattern_probs(tuple(rt_probs), tuple(rt_ids)).to(device)
+                for (rt_ids, rt_probs) in rt_ids_rt_probs
+            ],
+            dim=0,
+        )
         data = data.to(device)
         global_pred, local_pred = model(
             data.x,
             data.cat_X,
             data.edge_index,
             data.edge_attr,
-            data.edge_orderings,
             data.pattern_num_nodes,
             # data.pattern_probs,
             rt_probs,
@@ -289,16 +277,43 @@ def test(loader):
         )
         mae += (global_pred.flatten() - data.y).abs().sum()
         mape += ((global_pred.flatten() - data.y).abs() / data.y).sum()
-        q95loss += torch_quantile_loss(data.y.float(), global_pred.flatten(), 0.95) * data.y.shape[0]
-    return mae / len(loader.dataset), mape / len(loader.dataset), q95loss / len(loader.dataset)
+        q95loss += (
+            torch_quantile_loss(data.y.float(), global_pred.flatten(), 0.95)
+            * data.y.shape[0]
+        )
+    return (
+        mae / len(loader.dataset),
+        mape / len(loader.dataset),
+        q95loss / len(loader.dataset),
+    )
 
 
-if os.path.exists("processed/full_span_data_list.pt"):
-    data_list = torch.load("processed/full_span_data_list.pt")
+tr2data = torch.load("processed/tr2data.pt")
+# sample 100000 traces
+tr2data = {tr: tr2data[tr] for tr in list(tr2data.keys())[:100000]}
+runtime2graph = torch.load(f"processed/runtime2{args.graph_type}graph_map.pt")
+entry2runtimes = load("processed/entry2runtimes.joblib")
+resource_df = pd.read_csv("processed/processed_resource_df.csv", engine="pyarrow")
+resource_df["msname"] = resource_df["msname"].astype(int)
+resource_df = resource_df.set_index(["timestamp", "msname"])
+
+unique_ms_ids = np.unique(
+    np.array(
+        [
+            ms_id.item()
+            for runtime_id in runtime2graph.keys()
+            for ms_id in runtime2graph[runtime_id]["ms_id"]
+        ]
+    ).ravel()
+)
+print("==>> num unique_ms_ids: ", len(unique_ms_ids))
+
+if os.path.exists(f"processed/full_{args.graph_type}_data_list.pt"):
+    data_list = torch.load(f"processed/full_{args.graph_type}_data_list.pt")
 else:
     print("Getting data list...")
     data_list = get_data_list(tr2data, entry2runtimes, runtime2graph)
-    torch.save(data_list, "processed/full_span_data_list.pt")
+    torch.save(data_list, f"processed/full_{args.graph_type}_data_list.pt")
 train_loader, valid_loader, test_loader = get_data_loader(data_list)
 num_features = resource_df.shape[1]
 entry_ids = [data.entry_id.item() for data in data_list]
@@ -313,18 +328,17 @@ model = SAGEDeterministic(
     num_features + 1,
     [unique_ms_ids.max() + 1],
     entry_id_max,
-    interface_id_max, 
+    interface_id_max,
     rpctype_id_max,
     args.hidden_channels,
     args.num_layers,
     args.dropout,
 ).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-for epoch in (pbar := tqdm(range(1, args.epochs + 1))) :
+for epoch in (pbar := tqdm(range(1, args.epochs + 1))):
     train_mae, train_mape = train(train_loader)
     valid_mae, valid_mape, valid_q95_loss = test(valid_loader)
     test_mae, test_mape, test_q95_loss = test(test_loader)
     print(
         f"Epoch: {epoch}, Train: {train_mae}, Test mae: {test_mae}, Train mape: {train_mape}, Test mape: {test_mape}, Test q95 loss: {test_q95_loss}"
     )
-

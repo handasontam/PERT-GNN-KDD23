@@ -1,13 +1,5 @@
 import os
 from joblib import load
-from sklearn.feature_extraction.text import (
-    TfidfVectorizer,
-    HashingVectorizer,
-    TfidfTransformer,
-)
-from sklearn.pipeline import make_pipeline
-from kneed import KneeLocator
-from sklearn.cluster import KMeans, MiniBatchKMeans
 import numpy as np
 import torch
 import sys
@@ -26,162 +18,6 @@ def get_file(filename):
 ###################################
 # Trace processing #
 ###################################
-
-
-def get_corpus_data(entry_df):
-    corpus = []
-    sorted_traceids = []
-    # for traceid, group in df[df.traceid.isin(traceids)].groupby("traceid"):
-    for traceid, group in entry_df.groupby("traceid"):
-        # Get the list of ms sorted in timestamp
-        span_sequence = group["um_dm_interface"].values
-
-        # Transform the list of ms into document text (a string)
-        trace_text = " ".join(span_sequence)
-        corpus.append(trace_text)
-        sorted_traceids.append(traceid)
-    return corpus, sorted_traceids
-
-
-def get_corpus_from_trace(trace_df):
-    corpus = []
-
-
-def tfidf_microservices(ms_corpus):
-    # ms_corpus is a list of string, each element (string) contains the microservices id seperated by space
-    # return: a document-term matrix, shape = (number of string in the corpus, number of unique microservices)
-    vectorizer = TfidfVectorizer(ngram_range=(1, 2))
-    X = vectorizer.fit_transform(ms_corpus)
-    # dump(X, "doc_term_mat.joblib")
-    return X
-
-
-def hash_vec_microservices(ms_corpus):
-    # ms_corpus is a list of string, each element (string) contains the microservices id seperated by space
-    # return: a document-term matrix
-    hasher = HashingVectorizer(
-        ngram_range=(1, 2), n_features=1000, alternate_sign=False
-    )
-    vectorizer = make_pipeline(hasher, TfidfTransformer)
-    # dump(vectorizer, "hash_vectorizer.joblib")
-    X = vectorizer.fit_transform(ms_corpus)
-    return X
-
-
-# TODO: Use spark kmeans to cluster all MSs
-
-
-def find_optimal_clusters(data, max_k):
-
-    # f, ax = plt.subplots(1, 1)
-    # ax.plot(iters, sse, marker="o")
-    # ax.set_xlabel("Cluster Centers")
-    # ax.set_xticks(iters)
-    # ax.set_xticklabels(iters)
-    # ax.set_ylabel("SSE")
-    # ax.set_title("SSE by Cluster Center Plot")
-    # plt.savefig("./SSE_Kmeans_plot.png")
-    iters = range(2, min(data.shape[0], max_k + 1), 2)
-
-    k_list = []
-    sse = []
-    for k in iters:
-        k_list.append(k)
-        # inertia = (
-        #     KMeans(n_clusters=k, init="k-means++", random_state=20, verbose=0)
-        #     .fit(data)
-        #     .inertia_
-        # )
-
-        inertia = (
-            MiniBatchKMeans(
-                n_clusters=k,
-                init="k-means++",
-                batch_size=256 * 64 + 1,
-                random_state=20,
-                compute_labels=False,  # to use approximation of the inertia based on an exponentially weighted average of the batch inertiae
-                verbose=0,
-            )
-            .fit(data)
-            .inertia_
-        )
-        sse.append(inertia)
-        if inertia == 0:
-            break
-        # print("Fit {} clusters".format(k))
-
-    if len(k_list) > 1:
-        kneedle = KneeLocator(
-            x=k_list,
-            y=sse,
-            curve="convex",
-            direction="decreasing",
-            interp_method="polynomial",
-        )
-        knee = kneedle.knee
-        if knee is None:
-            kneedle = KneeLocator(
-                x=k_list,
-                y=sse,
-                curve="convex",
-                direction="decreasing",
-                interp_method="interp1d",
-            )
-            knee = kneedle.knee
-        if knee is None:
-            knee = 1
-
-    else:
-        knee = 1
-
-    print(f"sse={sse}")
-    print(f"knee={knee}")
-    # plt.plot(kneedle.x_difference, kneedle.y_difference)
-
-    kmeans = KMeans(n_clusters=knee, init="k-means++", random_state=20).fit(data)
-    return kmeans
-
-
-###################################
-# Trace clustering #
-###################################
-
-
-def get_pert_from_trace_cluster(entry_df, merge_method="graph_union"):
-    # TODO
-    pass
-
-
-def update_cluster2graph_map(
-    kmeans_labels, trace_ids, graph_type, merge_method, entry_group, cluster2graph_map
-):
-    # {cluster_id: {"edge_index": edge_index, "edge_attr": edge_attr}
-    if graph_type == "dag":
-        get_g_from_cluster = get_dag_prototype_from_trace_cluster
-    elif graph_type == "pert":
-        get_g_from_cluster = get_pert_from_trace_cluster
-        print("PERT not yet implemented!")
-        sys.exit()
-
-    else:
-        print(f"Graph type {graph_type} is not supported.")
-
-    for label in np.unique(kmeans_labels):
-        clustered_trace_ids = [
-            trace_id
-            for trace_id, kmeans_label in zip(trace_ids, kmeans_labels)
-            if kmeans_label == label
-        ]
-        clusterd_trace_df = entry_group[entry_group.traceid.isin(clustered_trace_ids)]
-        prototype_edge_index, prototype_edge_attr = get_g_from_cluster(
-            clusterd_trace_df, merge_method=merge_method
-        )
-        cluster2graph_map[label] = {
-            "edge_index": prototype_edge_index,
-            "edge_attr": prototype_edge_attr,
-        }
-
-    return cluster2graph_map
 
 
 def get_dag_prototype_from_trace_cluster(trace_cluster_df, merge_method="graph_union"):
@@ -249,7 +85,6 @@ class GraphConstruct:
         self.n_features = self.resource_df.shape[1]
 
     def drop_wrong_edges(self, trace_span_df):
-
         # remove self-loop
         trace_span_df = trace_span_df[trace_span_df.um != trace_span_df.dm]
 
@@ -320,9 +155,7 @@ class GraphConstruct:
         #################### Node depth ##############################
         span_adj_list = self.build_adj_list(edge_index)
 
-        min_node_depth = self.get_node_depth(
-            root_nid, num_nodes, span_adj_list
-        )
+        min_node_depth = self.get_node_depth(root_nid, num_nodes, span_adj_list)
         min_node_depth = np.array(min_node_depth)
         min_node_depth[np.isinf(min_node_depth)] = 0
         # print("==>> min_node_depth: ", min_node_depth)
@@ -330,14 +163,14 @@ class GraphConstruct:
         # print("==>> max_node_depth: ", max_node_depth)
         # max_normalization_constant = max(max_node_depth) if max(max_node_depth) > 0 else 1
         # print("==>> max_normalization_constant: ", max_normalization_constant)
-        min_normalization_constant = max(min_node_depth) if max(min_node_depth) > 0 else 1
+        min_normalization_constant = (
+            max(min_node_depth) if max(min_node_depth) > 0 else 1
+        )
         # print("==>> min_normalization_constant: ", min_normalization_constant)
         # node_depth = np.array(
         #     [min_node_depth / min_normalization_constant, max_node_depth / max_normalization_constant]
         # ).T  # N*2
-        node_depth = np.array(
-            [min_node_depth / min_normalization_constant]
-        ).T  # N*1
+        node_depth = np.array([min_node_depth / min_normalization_constant]).T  # N*1
 
         return X, node_depth
 
@@ -347,21 +180,12 @@ class GraphConstruct:
             dtype=torch.long,
         ).contiguous()
 
-        # The orderings of the edges
-        span_edge_orderings = torch.tensor(
-            self.trace_span_df_no_duplicates.loc[:, ["timestamp"]]
-            .rank(method="average")
-            .values
-            / len(self.trace_span_df_no_duplicates),
-            dtype=torch.float,
-        ).contiguous()
-
         span_edge_durations = torch.tensor(
             self.trace_span_df_no_duplicates.loc[:, ["rt"]].abs().values,
             dtype=torch.long,
         ).contiguous()
 
-        return span_edge_attr, span_edge_orderings, span_edge_durations
+        return span_edge_attr, span_edge_durations
 
     def get_span_edge_index(self):
         span_edge_index = torch.tensor(
@@ -383,14 +207,13 @@ class GraphConstruct:
             sorted_unique_ms, span_edge_index, root_nid, num_nodes
         )
 
-        edge_attr, edge_orderings, edge_durations = self.get_span_edge_features()
+        edge_attr, edge_durations = self.get_span_edge_features()
 
         return (
             span_edge_index,
             X,
             torch.tensor(node_depth, dtype=torch.long),
             edge_attr,
-            edge_orderings,
             edge_durations,
             sorted_unique_ms,
         )
@@ -414,9 +237,7 @@ class GraphConstruct:
         edge_attr = []  # N_edges * 4
 
         sorted_span_id = []  # for extracting node features
-        for um, count in (
-            self.trace_span_df_no_duplicates["um"].value_counts().iteritems()
-        ):
+        for um, count in self.trace_span_df_no_duplicates["um"].value_counts().items():
             n_nbrs = count
             # For each node in the span graph, there will be (#neighbors * 2 + 1) copy of nodes in the PERT graph
             n_stages = n_nbrs * 2 + 1
@@ -553,24 +374,3 @@ def find_most_recent_fts(resource_df, ts):
     return resource_df.loc[ts]
     # result = resource_df.iloc[resource_df.index.get_indexer([ts], method="pad")[0]]
     # return result if type(result) == np.int64 else result
-
-
-# max_kmeans_label = 0
-# doc_term_mat = tfidf_microservices(corpus)
-# doc_term_mat = hash_vec_microservices(corpus)
-
-# c = time.time()
-
-# kmeans = find_optimal_clusters(doc_term_mat, max_k=200)
-
-# d = time.time()
-
-# kmeans_labels = np.array(kmeans.labels_) + max_kmeans_label + 1
-# max_kmeans_label = max(kmeans_labels)
-
-
-# corpus, sorted_traceids = get_corpus_data(entry_group)
-
-# tr2data_map = update_tr2data_map(
-# sorted_traceids, kmeans_labels, tr2ts_map, tr2data_map
-# )
