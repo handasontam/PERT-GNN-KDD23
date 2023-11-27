@@ -20,6 +20,12 @@ parser.add_argument("--num_layers", type=int, default=1)
 parser.add_argument("--hidden_channels", type=int, default=32)
 parser.add_argument("--dropout", type=float, default=0)
 parser.add_argument("--lr", type=float, default=0.0003)
+parser.add_argument(
+    "--tau",
+    type=float,
+    default=0.5,
+    help="the quantile level, real number between 0 and 1, 0.5 (median) by default",
+)
 parser.add_argument("--epochs", type=int, default=100)
 parser.add_argument("--runs", type=int, default=10)
 parser.add_argument("--batch_size", type=int, default=170)
@@ -236,7 +242,7 @@ def train(train_loader):
             data.batch,
         )
         # quantile loss
-        loss = torch_quantile_loss(data.y.float(), global_pred.flatten(), 0.95)
+        loss = torch_quantile_loss(data.y.float(), global_pred.flatten(), args.tau)
         loss.backward()
         optimizer.step()
         total_loss += float(loss) * data.num_graphs
@@ -278,7 +284,7 @@ def test(loader):
         mae += (global_pred.flatten() - data.y).abs().sum()
         mape += ((global_pred.flatten() - data.y).abs() / data.y).sum()
         q95loss += (
-            torch_quantile_loss(data.y.float(), global_pred.flatten(), 0.95)
+            torch_quantile_loss(data.y.float(), global_pred.flatten(), args.tau)
             * data.y.shape[0]
         )
     return (
